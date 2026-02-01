@@ -1,7 +1,9 @@
 use crate::app::{App, FocusedPane, InputMode};
+use crate::highlight::Highlighter;
 use ratatui::{
     layout::{Constraint, Direction, Layout},
     style::{Color, Style},
+    text::Text,
     widgets::{Block, Borders, Paragraph, Wrap},
     Frame,
 };
@@ -84,17 +86,24 @@ pub fn ui(f: &mut Frame, app: &App) {
     let headers_p = Paragraph::new(app.headers_input.as_str()).block(headers_block);
     f.render_widget(headers_p, details_chunks[0]);
 
-    // Body
+    // Body - with validation error styling
+    let has_error = app.validation_error.is_some();
+    let body_style = if has_error {
+        Style::default().fg(Color::Red)
+    } else if app.focused_pane == FocusedPane::Body {
+        Style::default().fg(Color::Yellow)
+    } else {
+        Style::default()
+    };
+
     let body_block = Block::default()
         .borders(Borders::ALL)
-        .title("Body (JSON)")
-        .style(if app.focused_pane == FocusedPane::Body {
-            Style::default().fg(Color::Yellow)
-        } else {
-            Style::default()
-        });
-    let body_p = Paragraph::new(app.body_input.as_str()).block(body_block);
-    f.render_widget(body_p, details_chunks[1]);
+        .title(app.get_validation_status())
+        .style(body_style);
+
+    let mut body_textarea = app.body_input.clone();
+    body_textarea.set_block(body_block);
+    f.render_widget(&body_textarea, details_chunks[1]);
 
     // --- Response Section ---
     let response_block = Block::default()
@@ -111,10 +120,20 @@ pub fn ui(f: &mut Frame, app: &App) {
         });
 
     let content = app.response_text.as_deref().unwrap_or("No response yet...");
-    // For MVP, just wrap text. Later we can add scrolling state.
-    let response_p = Paragraph::new(content)
+
+    // Apply syntax highlighting for JSON responses
+    let highlighted_content = if content != "No response yet..." && content != "Loading..." {
+        let highlighter = Highlighter::new();
+        let lines = highlighter.highlight_json(content);
+        Text::from(lines)
+    } else {
+        Text::raw(content)
+    };
+
+    let response_p = Paragraph::new(highlighted_content)
         .block(response_block)
-        .wrap(Wrap { trim: false });
+        .wrap(Wrap { trim: false })
+        .scroll((app.response_scroll, 0));
     f.render_widget(response_p, response_area);
 
     // --- Footer Section ---

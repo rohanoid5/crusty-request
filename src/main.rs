@@ -1,4 +1,5 @@
 mod app;
+mod highlight;
 mod network;
 mod ui;
 
@@ -83,12 +84,15 @@ async fn run_app<B: Backend>(
                             app.input_mode = InputMode::Editing;
                         }
                         KeyCode::Enter => {
+                            // Save to history before sending
+                            app.save_to_history();
+
                             // Trigger Request!
                             let sender = tx.clone();
                             let method = app.method.clone();
                             let url = app.url_input.clone();
                             let headers = app.headers_input.clone();
-                            let body = app.body_input.clone();
+                            let body = app.get_body_text();
 
                             app.response_text = Some("Loading...".to_string());
 
@@ -114,32 +118,78 @@ async fn run_app<B: Backend>(
                                 app.prev_method();
                             }
                         }
+                        // History navigation (on URL pane in Normal mode)
+                        // Response scrolling (on Response pane in Normal mode)
+                        KeyCode::Up => {
+                            if app.focused_pane == FocusedPane::Url {
+                                app.prev_history();
+                            } else if app.focused_pane == FocusedPane::Response {
+                                app.response_scroll = app.response_scroll.saturating_sub(1);
+                            }
+                        }
+                        KeyCode::Down => {
+                            if app.focused_pane == FocusedPane::Url {
+                                app.next_history();
+                            } else if app.focused_pane == FocusedPane::Response {
+                                app.response_scroll = app.response_scroll.saturating_add(1);
+                            }
+                        }
+                        KeyCode::Char('p')
+                            if key
+                                .modifiers
+                                .contains(crossterm::event::KeyModifiers::CONTROL) =>
+                        {
+                            if app.focused_pane == FocusedPane::Url {
+                                app.prev_history();
+                            }
+                        }
+                        KeyCode::Char('n')
+                            if key
+                                .modifiers
+                                .contains(crossterm::event::KeyModifiers::CONTROL) =>
+                        {
+                            if app.focused_pane == FocusedPane::Url {
+                                app.next_history();
+                            }
+                        }
                         _ => {}
                     }
                 } else if app.input_mode == InputMode::Editing {
-                    match key.code {
-                        KeyCode::Esc => {
-                            app.input_mode = InputMode::Normal;
+                    // Handle Body pane separately - route all keys to TextArea
+                    if app.focused_pane == FocusedPane::Body {
+                        match key.code {
+                            KeyCode::Esc => {
+                                app.input_mode = InputMode::Normal;
+                            }
+                            _ => {
+                                // Route all other keys to TextArea for full editing support
+                                // (arrows, Home/End, Ctrl+A/E, Enter for newlines, etc.)
+                                app.body_input.input(key);
+                                app.validate_body();
+                            }
                         }
-                        KeyCode::Char(c) => match app.focused_pane {
-                            FocusedPane::Url => app.url_input.push(c),
-                            FocusedPane::Headers => app.headers_input.push(c),
-                            FocusedPane::Body => app.body_input.push(c),
+                    } else {
+                        // URL and Headers panes - character-by-character handling
+                        match key.code {
+                            KeyCode::Esc => {
+                                app.input_mode = InputMode::Normal;
+                            }
+                            KeyCode::Char(c) => match app.focused_pane {
+                                FocusedPane::Url => app.url_input.push(c),
+                                FocusedPane::Headers => app.headers_input.push(c),
+                                _ => {}
+                            },
+                            KeyCode::Backspace => match app.focused_pane {
+                                FocusedPane::Url => {
+                                    app.url_input.pop();
+                                }
+                                FocusedPane::Headers => {
+                                    app.headers_input.pop();
+                                }
+                                _ => {}
+                            },
                             _ => {}
-                        },
-                        KeyCode::Backspace => match app.focused_pane {
-                            FocusedPane::Url => {
-                                app.url_input.pop();
-                            }
-                            FocusedPane::Headers => {
-                                app.headers_input.pop();
-                            }
-                            FocusedPane::Body => {
-                                app.body_input.pop();
-                            }
-                            _ => {}
-                        },
-                        _ => {}
+                        }
                     }
                 }
             }
