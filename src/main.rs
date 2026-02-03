@@ -1,5 +1,6 @@
 mod app;
 mod highlight;
+mod key_value;
 mod network;
 mod ui;
 
@@ -74,8 +75,8 @@ async fn run_app<B: Backend>(
                         KeyCode::Tab => {
                             app.focused_pane = match app.focused_pane {
                                 FocusedPane::Method => FocusedPane::Url,
-                                FocusedPane::Url => FocusedPane::Headers,
-                                FocusedPane::Headers => FocusedPane::Body,
+                                FocusedPane::Url => FocusedPane::RequestDetails,
+                                FocusedPane::RequestDetails => FocusedPane::Body,
                                 FocusedPane::Body => FocusedPane::Response,
                                 FocusedPane::Response => FocusedPane::Method,
                             };
@@ -91,13 +92,15 @@ async fn run_app<B: Backend>(
                             let sender = tx.clone();
                             let method = app.method.clone();
                             let url = app.url_input.clone();
-                            let headers = app.headers_input.clone();
+                            let headers = app.headers.clone();
+                            let params = app.params.clone();
+                            let auth = app.authorization.clone();
                             let body = app.get_body_text();
 
                             app.response_text = Some("Loading...".to_string());
 
                             tokio::spawn(async move {
-                                match make_request(method, url, headers, body).await {
+                                match make_request(method, url, &headers, &params, &auth, body).await {
                                     Ok(resp) => {
                                         let _ = sender.send(Ok(resp)).await;
                                     }
@@ -111,11 +114,15 @@ async fn run_app<B: Backend>(
                         KeyCode::Right | KeyCode::Char(' ') => {
                             if app.focused_pane == FocusedPane::Method {
                                 app.next_method();
+                            } else if app.focused_pane == FocusedPane::RequestDetails {
+                                app.next_tab();
                             }
                         }
                         KeyCode::Left => {
                             if app.focused_pane == FocusedPane::Method {
                                 app.prev_method();
+                            } else if app.focused_pane == FocusedPane::RequestDetails {
+                                app.prev_tab();
                             }
                         }
                         // History navigation (on URL pane in Normal mode)
@@ -125,6 +132,12 @@ async fn run_app<B: Backend>(
                                 app.prev_history();
                             } else if app.focused_pane == FocusedPane::Response {
                                 app.response_scroll = app.response_scroll.saturating_sub(1);
+                            } else if app.focused_pane == FocusedPane::RequestDetails {
+                                // Navigate up in key-value rows
+                                let entries = app.get_active_tab_mut();
+                                if entries.focused_index > 0 {
+                                    entries.focused_index -= 1;
+                                }
                             }
                         }
                         KeyCode::Down => {
@@ -132,6 +145,13 @@ async fn run_app<B: Backend>(
                                 app.next_history();
                             } else if app.focused_pane == FocusedPane::Response {
                                 app.response_scroll = app.response_scroll.saturating_add(1);
+                            } else if app.focused_pane == FocusedPane::RequestDetails {
+                                // Navigate down in key-value rows
+                                let entries = app.get_active_tab_mut();
+                                // Allow navigating one past the end (for adding new entry)
+                                if entries.focused_index <= entries.entries.len() {
+                                    entries.focused_index += 1;
+                                }
                             }
                         }
                         KeyCode::Char('p')
@@ -168,23 +188,118 @@ async fn run_app<B: Backend>(
                                 app.validate_body();
                             }
                         }
+                    } else if app.focused_pane == FocusedPane::RequestDetails {
+                        // Handle key-value field editing
+                        match key.code {
+                            KeyCode::Esc => {
+                                app.input_mode = InputMode::Normal;
+                            }
+                            KeyCode::Tab => {
+                                // Switch between Key and Value fields
+                                let entries = app.get_active_tab_mut();
+                                entries.focused_field = match entries.focused_field {
+                                    crate::key_value::KeyValueField::Key => {
+                                        crate::key_value::KeyValueField::Value
+                                    }
+                                    crate::key_value::KeyValueField::Value => {
+                                        crate::key_value::KeyValueField::Key
+                                    }
+                                };
+                            }
+                            KeyCode::Enter => {
+                                // Move to next row, create new if at end
+                                let entries = app.get_active_tab_mut();
+                                if entries.focused_index >= entries.entries.len() {
+                                    // Add new empty entry
+                                    entries.add_entry(String::new(), String::new());
+                                }
+                                entries.focused_index += 1;
+                                if entries.focused_index > entries.entries.len() {
+                                    entries.focused_index = entries.entries.len();
+                                }
+                                // Reset to Key field for new row
+                                entries.focused_field = crate::key_value::KeyValueField::Key;
+                            }
+                            KeyCode::Delete | KeyCode::Char('d')
+                                if key
+                                    .modifiers
+                                    .contains(crossterm::event::KeyModifiers::CONTROL) =>
+                            {
+                                // Remove current row
+                                let entries = app.get_active_tab_mut();
+                                let idx = entries.focused_index;
+                                if idx < entries.entries.len() {
+                                    entries.remove_entry(idx);
+                                    // Adjust focus if needed
+                                    if entries.focused_index >= entries.entries.len()
+                                        && entries.focused_index > 0
+                                    {
+                                        entries.focused_index -= 1;
+                                    }
+                                }
+                            }
+                            KeyCode::Char(c) => {
+                                // Add character to current field
+                                let entries = app.get_active_tab_mut();
+                                let focused_field = entries.focused_field.clone();
+                                let focused_index = entries.focused_index;
+
+                                if let Some(entry) = entries.get_selected_mut(focused_index) {
+                                    match focused_field {
+                                        crate::key_value::KeyValueField::Key => {
+                                            entry.key.push(c);
+                                        }
+                                        crate::key_value::KeyValueField::Value => {
+                                            entry.value.push(c);
+                                        }
+                                    }
+                                } else if focused_index >= entries.entries.len() {
+                                    // Create new entry if typing on empty row
+                                    entries.add_entry(String::new(), String::new());
+                                    if let Some(entry) = entries.get_selected_mut(focused_index) {
+                                        match focused_field {
+                                            crate::key_value::KeyValueField::Key => {
+                                                entry.key.push(c);
+                                            }
+                                            crate::key_value::KeyValueField::Value => {
+                                                entry.value.push(c);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            KeyCode::Backspace => {
+                                // Remove character from current field
+                                let entries = app.get_active_tab_mut();
+                                let focused_field = entries.focused_field.clone();
+                                let focused_index = entries.focused_index;
+
+                                if let Some(entry) = entries.get_selected_mut(focused_index) {
+                                    match focused_field {
+                                        crate::key_value::KeyValueField::Key => {
+                                            entry.key.pop();
+                                        }
+                                        crate::key_value::KeyValueField::Value => {
+                                            entry.value.pop();
+                                        }
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
                     } else {
-                        // URL and Headers panes - character-by-character handling
+                        // URL pane - character-by-character handling
                         match key.code {
                             KeyCode::Esc => {
                                 app.input_mode = InputMode::Normal;
                             }
                             KeyCode::Char(c) => match app.focused_pane {
                                 FocusedPane::Url => app.url_input.push(c),
-                                FocusedPane::Headers => app.headers_input.push(c),
                                 _ => {}
                             },
                             KeyCode::Backspace => match app.focused_pane {
                                 FocusedPane::Url => {
                                     app.url_input.pop();
-                                }
-                                FocusedPane::Headers => {
-                                    app.headers_input.pop();
                                 }
                                 _ => {}
                             },

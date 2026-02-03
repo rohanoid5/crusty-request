@@ -2,17 +2,28 @@ use serde::{Deserialize, Serialize};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tui_textarea::TextArea;
 
+use crate::key_value::KeyValueEntries;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RequestHistoryEntry {
     pub method: HttpMethod,
     pub url: String,
-    pub headers: String,
+    pub headers: KeyValueEntries,
+    pub params: KeyValueEntries,
+    pub auth: KeyValueEntries,
     pub body: String,
     pub timestamp: u64,
 }
 
 impl RequestHistoryEntry {
-    pub fn new(method: HttpMethod, url: String, headers: String, body: String) -> Self {
+    pub fn new(
+        method: HttpMethod,
+        url: String,
+        headers: KeyValueEntries,
+        params: KeyValueEntries,
+        auth: KeyValueEntries,
+        body: String,
+    ) -> Self {
         let timestamp = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap_or_default()
@@ -21,6 +32,8 @@ impl RequestHistoryEntry {
             method,
             url,
             headers,
+            params,
+            auth,
             body,
             timestamp,
         }
@@ -52,9 +65,16 @@ pub enum InputMode {
 pub enum FocusedPane {
     Method,
     Url,
-    Headers,
+    RequestDetails,
     Body,
     Response, // Maybe for scrolling
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RequestTab {
+    Params,
+    Headers,
+    Authorization,
 }
 
 #[derive(Debug, Clone)]
@@ -66,7 +86,10 @@ pub struct App {
     // Request Data
     pub method: HttpMethod,
     pub url_input: String,
-    pub headers_input: String,
+    pub active_request_tab: RequestTab,
+    pub headers: KeyValueEntries,
+    pub params: KeyValueEntries,
+    pub authorization: KeyValueEntries,
     pub body_input: TextArea<'static>,
 
     // Response Data (Placeholder for now)
@@ -90,7 +113,10 @@ impl App {
             focused_pane: FocusedPane::Url,
             method: HttpMethod::GET,
             url_input: String::new(),
-            headers_input: String::new(),
+            active_request_tab: RequestTab::Headers,
+            headers: KeyValueEntries::new(),
+            params: KeyValueEntries::new(),
+            authorization: KeyValueEntries::new(),
             body_input: TextArea::default(),
             response_text: None,
             response_status: None,
@@ -123,6 +149,38 @@ impl App {
 
     pub fn quit(&mut self) {
         self.running = false;
+    }
+
+    /// Check if the focus is on the RequestDetails pane (tabbed Headers/Params/Auth)
+    pub fn is_in_request_details(&self) -> bool {
+        self.focused_pane == FocusedPane::RequestDetails
+    }
+
+    /// Cycle to next request tab
+    pub fn next_tab(&mut self) {
+        self.active_request_tab = match self.active_request_tab {
+            RequestTab::Headers => RequestTab::Params,
+            RequestTab::Params => RequestTab::Authorization,
+            RequestTab::Authorization => RequestTab::Headers,
+        };
+    }
+
+    /// Cycle to previous request tab
+    pub fn prev_tab(&mut self) {
+        self.active_request_tab = match self.active_request_tab {
+            RequestTab::Headers => RequestTab::Authorization,
+            RequestTab::Params => RequestTab::Headers,
+            RequestTab::Authorization => RequestTab::Params,
+        };
+    }
+
+    /// Get mutable reference to the active tab's key-value entries
+    pub fn get_active_tab_mut(&mut self) -> &mut KeyValueEntries {
+        match self.active_request_tab {
+            RequestTab::Headers => &mut self.headers,
+            RequestTab::Params => &mut self.params,
+            RequestTab::Authorization => &mut self.authorization,
+        }
     }
 
     /// Get body text from TextArea
@@ -179,7 +237,9 @@ impl App {
         let entry = RequestHistoryEntry::new(
             self.method.clone(),
             self.url_input.clone(),
-            self.headers_input.clone(),
+            self.headers.clone(),
+            self.params.clone(),
+            self.authorization.clone(),
             self.get_body_text(),
         );
         self.history.push(entry);
@@ -191,7 +251,9 @@ impl App {
         if let Some(entry) = self.history.get(index).cloned() {
             self.method = entry.method;
             self.url_input = entry.url;
-            self.headers_input = entry.headers;
+            self.headers = entry.headers;
+            self.params = entry.params;
+            self.authorization = entry.auth;
             self.set_body_text(&entry.body);
             self.history_index = Some(index);
         }
@@ -227,6 +289,34 @@ impl App {
             Some(idx) => {
                 self.load_from_history(idx + 1);
             }
+        }
+    }
+
+    pub fn next_request_tab(&mut self) {
+        self.active_request_tab = match self.active_request_tab {
+            RequestTab::Params => RequestTab::Headers,
+            RequestTab::Headers => RequestTab::Authorization,
+            RequestTab::Authorization => RequestTab::Params,
+        };
+    }
+
+    pub fn prev_request_tab(&mut self) {
+        self.active_request_tab = match self.active_request_tab {
+            RequestTab::Params => RequestTab::Authorization,
+            RequestTab::Headers => RequestTab::Params,
+            RequestTab::Authorization => RequestTab::Headers,
+        };
+    }
+
+    pub fn is_request_tab_active(&self, tab: &RequestTab) -> bool {
+        &self.active_request_tab == tab
+    }
+
+    pub fn get_active_request_entries(&mut self) -> &mut KeyValueEntries {
+        match self.active_request_tab {
+            RequestTab::Params => &mut self.params,
+            RequestTab::Headers => &mut self.headers,
+            RequestTab::Authorization => &mut self.authorization,
         }
     }
 }

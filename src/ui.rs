@@ -1,9 +1,10 @@
-use crate::app::{App, FocusedPane, InputMode};
+use crate::app::{App, FocusedPane, InputMode, RequestTab};
 use crate::highlight::Highlighter;
+use crate::key_value::KeyValueWidget;
 use ratatui::{
     layout::{Constraint, Direction, Layout},
-    style::{Color, Style},
-    text::Text,
+    style::{Color, Modifier, Style},
+    text::{Line, Span, Text},
     widgets::{Block, Borders, Paragraph, Wrap},
     Frame,
 };
@@ -68,23 +69,77 @@ pub fn ui(f: &mut Frame, app: &App) {
     let url_p = Paragraph::new(app.url_input.as_str()).block(url_block);
     f.render_widget(url_p, url_chunks[1]);
 
-    // Headers / Body Area
+    // Request / Body Area
     let details_chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
         .split(details_area);
 
-    // Headers
-    let headers_block = Block::default()
+    // Request Key-Value Entries
+    let request_block = Block::default()
         .borders(Borders::ALL)
-        .title("Headers (Key:Value)")
-        .style(if app.focused_pane == FocusedPane::Headers {
+        .title("Request")
+        .style(if app.focused_pane == FocusedPane::RequestDetails {
             Style::default().fg(Color::Yellow)
         } else {
             Style::default()
         });
-    let headers_p = Paragraph::new(app.headers_input.as_str()).block(headers_block);
-    f.render_widget(headers_p, details_chunks[0]);
+
+    // Split request area vertically: tab bar at top, content below
+    let request_inner = request_block.inner(details_chunks[0]);
+    f.render_widget(request_block, details_chunks[0]);
+
+    let request_sections = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1), // Tab bar
+            Constraint::Min(0),    // Key-value content
+        ])
+        .split(request_inner);
+
+    // Render tab bar with all three tabs
+    let tabs = vec![
+        ("Headers", RequestTab::Headers),
+        ("Params", RequestTab::Params),
+        ("Auth", RequestTab::Authorization),
+    ];
+
+    let mut tab_spans = Vec::new();
+    for (i, (label, tab)) in tabs.iter().enumerate() {
+        if i > 0 {
+            tab_spans.push(Span::raw(" "));
+        }
+
+        let style = if *tab == app.active_request_tab {
+            Style::default()
+                .fg(Color::Blue)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(Color::DarkGray)
+        };
+
+        tab_spans.push(Span::styled(format!("[{}]", label), style));
+    }
+
+    let tab_line = Line::from(tab_spans);
+    let tab_paragraph = Paragraph::new(tab_line);
+    f.render_widget(tab_paragraph, request_sections[0]);
+
+    // Render key-value widget for active tab
+    let active_entries = match app.active_request_tab {
+        RequestTab::Headers => &app.headers,
+        RequestTab::Params => &app.params,
+        RequestTab::Authorization => &app.authorization,
+    };
+
+    let is_editing =
+        app.input_mode == InputMode::Editing && app.focused_pane == FocusedPane::RequestDetails;
+
+    let kv_widget = KeyValueWidget::new(active_entries)
+        .focused(app.focused_pane == FocusedPane::RequestDetails)
+        .editing(is_editing);
+
+    kv_widget.render(f, request_sections[1]);
 
     // Body - with validation error styling
     let has_error = app.validation_error.is_some();
