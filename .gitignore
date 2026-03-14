@@ -1,1 +1,4 @@
 /target
+/screenshots
+.DS_Store
+implementation_plan.md
