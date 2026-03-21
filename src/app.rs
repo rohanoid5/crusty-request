@@ -140,6 +140,7 @@ pub struct App {
     pub history: Vec<RequestHistoryEntry>,
     pub history_index: Option<usize>,
     pub history_scroll: usize,
+    pub history_search: TextInput,
 
     // JSON Validation
     pub validation_error: Option<(usize, usize, String)>,
@@ -188,6 +189,7 @@ impl App {
             history: Vec::new(),
             history_index: None,
             history_scroll: 0,
+            history_search: TextInput::new(),
             validation_error: None,
             collections: Vec::new(),
             active_collection: None,
@@ -227,9 +229,9 @@ impl App {
     /// Cycle to next request tab
     pub fn next_request_tab(&mut self) {
         self.active_request_tab = match self.active_request_tab {
-            RequestTab::Params => RequestTab::Headers,
-            RequestTab::Headers => RequestTab::Authorization,
-            RequestTab::Authorization => RequestTab::Body,
+            RequestTab::Params => RequestTab::Authorization,
+            RequestTab::Authorization => RequestTab::Headers,
+            RequestTab::Headers => RequestTab::Body,
             RequestTab::Body => RequestTab::Params,
         };
     }
@@ -415,16 +417,43 @@ impl App {
         }
     }
 
+    /// Get filtered history based on search query, returning original indices
+    pub fn get_filtered_history(&self) -> Vec<(usize, &RequestHistoryEntry)> {
+        let query = self.history_search.text.to_lowercase();
+        self.history
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| {
+                if query.is_empty() {
+                    return true;
+                }
+                entry.url.to_lowercase().contains(&query)
+                    || entry.method.to_string().to_lowercase().contains(&query)
+                    || entry.response_status.map(|s| s.to_string() == query).unwrap_or(false)
+            })
+            .collect()
+    }
+
     /// Navigate to previous history entry (older)
     pub fn prev_history(&mut self) {
-        if self.history.is_empty() {
+        let filtered = self.get_filtered_history();
+        if filtered.is_empty() {
             return;
         }
 
         let new_index = match self.history_index {
-            None => self.history.len() - 1, // Start from most recent
-            Some(0) => 0,                   // Already at oldest
-            Some(idx) => idx - 1,
+            None => filtered.last().map(|(i, _)| *i).unwrap_or(0), // Start from most recent
+            Some(current_idx) => {
+                if let Some(pos) = filtered.iter().position(|(i, _)| *i == current_idx) {
+                    if pos == 0 {
+                        filtered[0].0
+                    } else {
+                        filtered[pos - 1].0
+                    }
+                } else {
+                    filtered.last().map(|(i, _)| *i).unwrap_or(0)
+                }
+            }
         };
 
         self.load_from_history(new_index);
@@ -432,18 +461,22 @@ impl App {
 
     /// Navigate to next history entry (newer)
     pub fn next_history(&mut self) {
-        if self.history.is_empty() {
+        let filtered = self.get_filtered_history();
+        if filtered.is_empty() {
             return;
         }
 
         match self.history_index {
             None => {} // Not browsing history
-            Some(idx) if idx >= self.history.len() - 1 => {
-                // At newest entry, clear history browsing
-                self.history_index = None;
-            }
-            Some(idx) => {
-                self.load_from_history(idx + 1);
+            Some(current_idx) => {
+                if let Some(pos) = filtered.iter().position(|(i, _)| *i == current_idx) {
+                    if pos >= filtered.len() - 1 {
+                        // At newest entry, clear history browsing
+                        self.history_index = None;
+                    } else {
+                        self.load_from_history(filtered[pos + 1].0);
+                    }
+                }
             }
         }
     }
@@ -499,7 +532,8 @@ impl App {
 
     /// Load a saved request from the active collection
     pub fn load_saved_request(&mut self, req_index: usize) {
-        let req = self.active_collection
+        let req = self
+            .active_collection
             .and_then(|col_idx| self.collections.get(col_idx))
             .and_then(|col| col.requests.get(req_index))
             .cloned();

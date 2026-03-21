@@ -487,6 +487,22 @@ fn handle_editing_mode(app: &mut App, key: crossterm::event::KeyEvent) {
         return;
     }
 
+    // History search editing
+    if app.focused_pane == FocusedPane::Response && app.active_response_tab == crate::app::ResponseTab::History {
+        match key.code {
+            KeyCode::Esc | KeyCode::Enter => {
+                app.input_mode = InputMode::Normal;
+            }
+            KeyCode::Left => app.history_search.move_left(),
+            KeyCode::Right => app.history_search.move_right(),
+            KeyCode::Char(c) => app.history_search.insert_char(c),
+            KeyCode::Backspace => app.history_search.delete_back(),
+            KeyCode::Delete => app.history_search.delete_forward(),
+            _ => {}
+        }
+        return;
+    }
+
     // Any other pane — just handle Esc
     if key.code == KeyCode::Esc {
         app.input_mode = InputMode::Normal;

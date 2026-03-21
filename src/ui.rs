@@ -428,31 +428,68 @@ fn render_history_panel(f: &mut Frame, app: &App, area: Rect) {
         Style::default().fg(BORDER_COLOR)
     };
 
+    let filtered = app.get_filtered_history();
+
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(border_style)
         .title(Span::styled(
-            format!("History ({})", app.history.len()),
+            format!("History ({})", filtered.len()),
             Style::default().fg(FG_PRIMARY),
         ));
 
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    if app.history.is_empty() {
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3), // Search bar
+            Constraint::Min(0),    // List
+        ])
+        .split(inner);
+
+    // Render search bar
+    let is_searching = app.focused_pane == FocusedPane::Response && app.input_mode == InputMode::Editing;
+    let search_border_style = if is_searching {
+        Style::default().fg(ACTIVE_BORDER)
+    } else {
+        Style::default().fg(BORDER_COLOR)
+    };
+    let search_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(search_border_style)
+        .title("Search (Press 'i' to edit)");
+
+    let search_display = if app.history_search.is_empty() && !is_searching {
+        Line::from(Span::styled(
+            "Type to filter...",
+            Style::default().fg(FG_DIM),
+        ))
+    } else {
+        Line::from(Span::styled(
+            app.history_search.render_with_cursor(is_searching),
+            Style::default().fg(FG_PRIMARY),
+        ))
+    };
+
+    let search_text = Paragraph::new(search_display).block(search_block);
+    f.render_widget(search_text, chunks[0]);
+
+    if filtered.is_empty() {
         let empty_msg = Paragraph::new(Line::from(Span::styled(
-            "  No requests in history. Send a request to see it here.",
+            "  No matching requests.",
             Style::default().fg(FG_DIM),
         )));
-        f.render_widget(empty_msg, inner);
+        f.render_widget(empty_msg, chunks[1]);
         return;
     }
 
     // Render history entries (most recent first)
-    let max_visible = inner.height as usize;
+    let max_visible = chunks[1].height as usize;
     let mut lines = Vec::new();
 
-    for (idx, entry) in app.history.iter().enumerate().rev() {
+    for (idx, entry) in filtered.into_iter().rev() {
         if lines.len() >= max_visible {
             break;
         }
@@ -478,7 +515,7 @@ fn render_history_panel(f: &mut Frame, app: &App, area: Rect) {
         spans.push(Span::raw(" "));
 
         // URL (truncated)
-        let max_url_len = (inner.width as usize).saturating_sub(30);
+        let max_url_len = (chunks[1].width as usize).saturating_sub(30);
         let url_display = if entry.url.len() > max_url_len {
             format!("{}...", &entry.url[..max_url_len.saturating_sub(3)])
         } else {
@@ -516,7 +553,7 @@ fn render_history_panel(f: &mut Frame, app: &App, area: Rect) {
     }
 
     let history_p = Paragraph::new(lines).scroll((app.history_scroll as u16, 0));
-    f.render_widget(history_p, inner);
+    f.render_widget(history_p, chunks[1]);
 }
 
 fn render_footer(f: &mut Frame, app: &App, area: Rect) {
